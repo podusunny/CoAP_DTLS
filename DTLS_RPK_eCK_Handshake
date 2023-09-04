@@ -1,4 +1,4 @@
-theory DTLS_RPK_eDY_Handshake
+theory DTLS_RPK_eCK_Handshake
 begin
 
 builtins: hashing, symmetric-encryption, asymmetric-encryption, signing,diffie-hellman
