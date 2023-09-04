@@ -1,4 +1,4 @@
-theory DTLS_CA_DY_Handshake
+theory DTLS_CA_eCK_Handshake
 begin
 
 builtins: hashing, symmetric-encryption, asymmetric-encryption, signing,diffie-hellman
