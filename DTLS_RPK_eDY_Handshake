@@ -1,0 +1,205 @@
+theory DTLS_RPK_eDY_Handshake
+begin
+
+builtins: hashing, symmetric-encryption, asymmetric-encryption, signing,diffie-hellman
+
+section{*DTLS DTLS_RPK_eDY*}
+
+functions: PRF/1,HMAC/1,list/1 [private],renc/2,rdec/2,RPK/1,PK/1,SK/1,verifyr/3,verifyd/2,vp/2
+equations://
+  RPK(PK(x)) = x
+
+equations://
+  rdec(renc(<a,b>,SK(PK(y))),PK(y)) = a
+  ,
+  rdec(renc(<RPK(z),b>,SK(z)),z) = RPK(z)
+  ,
+  verifyr(renc(<a,b>,SK(PK(y))),a,PK(y)) = true
+  ,
+  verifyr(renc(<RPK(z),b>,SK(z)),RPK(z),z) = true
+  ,
+  verifyd(rdec(renc(<a,b>,SK(PK(y))),PK(y)),a) = true
+  ,
+  verifyd(rdec(renc(<RPK(z),b>,SK(z)),z),RPK(z)) = true
+equations: 
+  vp(a,PRF(x)) = true,
+  vp(a,PRF(<x.1,x.2,x.3>)) = true
+
+rule C_0:
+    let
+       C = 'Client'
+       Ver = 'DTLS1_2'
+    in
+    [Fr(~Nc),Fr(~Sid),Fr(~CCT),Fr(~SCT)]
+    --[Honest(C)]->
+    [Out(<$C,Ver,~Nc,~Sid,~CCT,~SCT>),ST_C_0($C,Ver,~Nc,~Sid,~CCT,~SCT),!Ltk($C,~SCT)]
+
+rule S_0:
+    let
+      S = 'Server'
+      RSPK = list(SCT)
+      SPK =  PK(RSPK)
+      SSK =  SK(SPK)  
+      Ssig = renc(<RSPK,~Ns>,SSK)
+    in
+    [In(<$C,Ver,Nc,Sid,CCT,SCT>),Fr(~Ns)]
+    --[Send($S,<CCT,Ssig,SPK>),
+       Honest($S)]->
+    [Out(<$S,Ver,Nc,~Ns,Sid,CCT,Ssig,SPK>),ST_S_0($S,Ver,Nc,~Ns,Sid,Ssig,RSPK,SPK,SSK),!Ltk($S,SSK)]
+
+rule C_1:
+    let 
+      Label = 'Finished'
+      Num = '0x01'
+      RCPK = list(CCT)
+      CPK = PK(RCPK)
+      CSK = SK(CPK)
+      PMK = 'g'^CSK^SPK
+      MK = PRF(PMK,'MasterSecret',Nc,Ns)
+      Verify_Data_C = PRF(MK,Label,h(Ver,Nc,Ns,Sid))
+      Csig = renc(<RCPK,Nc>,CSK)
+      EdcCsig = rdec(Ssig,SPK)
+    in
+    [In(<$S,Ver,Nc,Ns,Sid,CCT,Ssig,SPK>),ST_C_0($C,Ver,Nc,Sid,CCT,SCT)]
+    --[
+    Eq(verifyd(EdcCsig,RPK(SPK)),true),
+    DosDefense($S,<CCT,Ssig,SPK>),
+    MasterKey($S,$C,MK),
+    Negotiate($C,$S,<Label,PMK,MK,Verify_Data_C>),
+    Send($C,<Csig,CPK,Verify_Data_C>),
+    Honest($C)
+    //Eq(verifyr(Ssig,RPK(SPK),SPK),true),
+    //verifyR(Ssig,RPK(SPK),SPK)
+    ]->//
+    [Out(<$C,Num,Label,Csig,CPK,Verify_Data_C>),ST_C_1($C,Ver,Nc,Sid,Csig,Verify_Data_C,MK,SPK,RCPK,CPK)
+    ,!Ltk($C,CSK),!Pmks($C,PMK)]
+
+rule S_1:
+  let 
+  Label = 'Finished'
+  Num = '0x01'
+  PMK = 'g'^SSK^CPK
+  MK = PRF(PMK,'MasterSecret',Nc,Ns)
+  Verify_Data_S = PRF(MK,Label,h(Ver,Nc,Ns,Sid))
+  EdcSsig = rdec(Csig,CPK)
+  in 
+  [In(<$C,Num,Label,Csig,CPK,Verify_Data_C>),ST_S_0($S,Ver,Nc,Ns,Sid,Ssig,RSPK,SPK,SSK),!Ltk($S,SSK)]
+  --[
+        Eq(verifyd(EdcSsig,PRF(CPK)),true),
+       //Eq(verifyr(Csig,RPK(CPK),CPK),true),
+       Eq(vp(Verify_Data_C,Verify_Data_S),true),
+       VerifyC(Verify_Data_C,Verify_Data_S),
+       DosDefense($C,<Csig,CPK,Verify_Data_C>),
+       MasterKey($S,$C,MK),
+       Negotiate($S,$C,<Label,PMK,MK,Verify_Data_S>),
+       Commit($C,$S,MK,PMK),
+       Send($S,Verify_Data_S),
+       Honest($S)
+       //Honest($S)
+    ]->
+  [Out(<$S,Num,$Label,Verify_Data_S>),!Ltk($S,SSK),!Pmks($S,PMK)]
+//!SRPK(S,RSPK,SPK,SSK) ,ST_S_1($S,Ver,Nc,Ns,Sid,Ssig,Verify_Data_S,PMK,MK,CPK)
+rule C_2:
+  [In(<$S,Num,Label,Verify_Data_S>),ST_C_1($C,Ver,Nc,Sid,Csig,Verify_Data_C,MK,SPK,RCPK,CPK),!Ltk($C,CSK),!Pmks($C,PMK)]
+  --[
+        Eq(vp(Verify_Data_S,Verify_Data_C),true),
+        SessionKey($S,$C,MK),
+        VerifyS(Verify_Data_S,Verify_Data_C),
+        DosDefense($S,Verify_Data_S),
+        Commit($C,$S,MK,PMK),
+        Honest($C)
+    ]->
+  [!Ltk($C,CSK)]//!CRPK(C,RCPK,CPK,CSK)
+
+//
+rule Ltk_reveal:
+  [!Ltk(A,M)] 
+  --[LTKRev(A)]-> 
+  [Out(M)]
+//
+rule DH_reveal:
+  [!Pmks(Q,PMK)] 
+  --[DHRev(Q)]-> 
+  [Out(PMK)]
+  
+
+restriction Eq_check_succeed:
+ "
+    All x y #i. Eq(x,y) @ i ==> x = y
+ "
+
+lemma Dos_protection: 
+  "
+    All A m #i. DosDefense(A,m) @i ==> 
+      (Ex #j. Send(A,m) @j & Honest(A) @j & j<i)"
+ //
+
+lemma Data_Verify:
+  "
+    All m1 m2 a b #i #q. 
+       VerifyS(m1,m2) @i & Eq(a,b) @q ==>(a = b)
+       &
+       (Ex Data1 Data2 #j. VerifyC(Data1,Data2) @j & Data2 = m1 & j<i)
+       &
+       ((Ex A B MK. SessionKey(A,B,MK) @i )) //& k < i
+  "
+  
+lemma DTLS_MK_secrecy:
+  "
+
+    All S C MK #i1 #j.
+          SessionKey(S,C,MK) @ i1 & K(MK) @j 
+          ==> 
+          (Ex #i2 #i3. MasterKey(S,C,MK) @ i2 & LTKRev(S) @ i3)
+          |
+          (Ex #i2 #i3. MasterKey(S,C,MK) @ i2 & DHRev(S) @ i3)
+          |
+          (Ex #i2 #i3. MasterKey(S,C,MK) @ i2 & LTKRev(C) @ i3)
+          |
+          (Ex #i2 #i3. MasterKey(S,C,MK) @ i2 & DHRev(C) @ i3) 
+
+  "
+ 
+lemma DTLS_injective_agree:
+  "
+    All C S MK PMK #i #q.
+      Commit(C,S,MK,PMK) @i & K(MK) @q
+      ==>
+          (
+            Ex #j1 #j2 . (Negotiate(C,S,MK) @j1
+          & Negotiate(S,C,MK) @j2 & j1 < j2 & j2 < i)
+          & not (Ex Role_A2 Role_B2 #k. 
+              Commit(Role_A2,Role_B2,MK,PMK) @k & not (#i = #k))
+          & (Ex A #j3. LTKRev(A) @j3 & (A=C | A=S) & Ex B #j4. DHRev(B) @j4 & (B=C | B=S))
+          )
+          |
+          ( 
+            (Ex #j1.Negotiate(C,S,MK) @j1 & (Ex A #j2. LTKRev(A) @j2 & (A=C | A=S) & Ex B #j3. DHRev(B) @j3 & (B=C | B=S)))
+            & not (Ex Role_A2 Role_B2 #k. 
+              Commit(Role_A2,Role_B2,MK,PMK) @k & not (#i = #k))
+          )         
+  "
+ /*
+          |
+          (
+            Ex #j1 #j2 j3 j4. (Negotiate(C,S,MK) @j1
+          & Negotiate(S,C,MK) @j2 & j1 < j2 & j2 < i)
+          & not (Ex Role_A2 Role_B2 #k. 
+              Commit(Role_A2,Role_B2,MK,PMK) @k & not (#i = #k))
+          & LTKRev(C) @ j3  & DHRev(S) @ j4
+          )
+          
+          |
+           ( (Ex #j1 #j3.Negotiate(C,S,MK) @j1 & (LTKRev(S) @ j3  | DHRev(S) @ j3 |LTKRev(C) @ j3  | DHRev(C) @ j3))
+            & not (Ex Role_A2 Role_B2 #k. 
+              Commit(Role_A2,Role_B2,MK,PMK) @k & not (#i = #k))
+            )
+          |
+           ((Ex #j1 #j3.Negotiate(S,C,MK) @j1 & (LTKRev(S) @ j3  | DHRev(S) @ j3 |LTKRev(C) @ j3  | DHRev(C) @ j3)) 
+            
+          & not (Ex Role_A2 Role_B2 #k. 
+              Commit(Role_A2,Role_B2,MK,PMK) @k & not (#i = #k))
+           ) 
+ */
+ 
+end    
