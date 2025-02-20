@@ -1,0 +1,148 @@
+theory PUF_DY_Handshake
+begin
+
+builtins: hashing, symmetric-encryption, asymmetric-encryption, signing,diffie-hellman
+
+section{*PUF PUF_DY*}
+
+functions: PRF/1,HMAC/1,vp/2
+
+equations: 
+  vp(a,PRF(x)) = true,
+  vp(a,PRF(<x.1,x.2,x.3>)) = true,
+  vp(<x.1,x.2>,x.2) = true
+rule PK_register:
+
+    [Fr(~ltk)]
+    --[]->
+    [!Ltk(~ltk)]
+
+rule C_0:
+      let 
+        Ver = 'PUF'
+      in 
+      [Fr(~Sid),!Ltk(~ltk)]
+      --[
+        Send($C,<~Sid,$Ver>),
+        Honest($C)
+      ]->
+      [Out(<$C,~Sid,$Ver>),ST_C_0($C,~Sid,~ltk,$Ver)]
+
+rule S_0:
+      let 
+
+        data1 = senc(~ak,~ltk)
+      in 
+      [In(<$C,Sid,$Ver>),Fr(~n1),Fr(~ak),!Ltk(~ltk)]
+      --[
+        //DosDefense($C,<Sid,$Ver>),
+        Send($S,<Sid,$Ver,~n1,data1>),
+        Honest($S)
+      ]->
+      [Out(<$S,Sid,$Ver,~n1,data1>),ST_S_0($S,Sid,~n1,~ak,data1,$Ver)]
+
+rule C_1:
+      let 
+        kk = sdec(data1,~ltk)
+        data2 = senc(<n1,~n2>,kk)
+      in 
+      [In(<$S,~Sid,$Ver,n1,data1>),Fr(~n2),ST_C_0($C,~Sid,~ltk,$Ver)]
+      --[
+        //DosDefense($S,<Sid,$Ver,n1,data1>),
+        Origin(kk),
+        Sd($S,<~Sid,$Ver,data2>),
+        Negotiate($S,$C,<n1,~n2>,kk),
+        Send($C,<~Sid,$Ver,data2>),
+        Honest($C)
+      ]->
+      [Out(<$C,~Sid,$Ver,data2>),ST_C_1($C,~Sid,~ltk,n1,~n2,kk,data2,$Ver)]
+
+rule S_1:
+      let 
+        nr = sdec(data2,~ak)
+        nd = nr
+        data3 = senc(<~n3,nd>,~ak)
+      in 
+      [In(<$C,Sid,$Ver,data2>),Fr(~n3),ST_S_0($S,Sid,~n1,~ak,data1,$Ver)]
+      --[
+        
+        Eq(vp(data2,~n1),true),
+        //DosDefense($C,<Sid,$Ver,data2>),
+        VerifyS($C,$S,nr),
+        //SessionKey($C,$S,ak),
+        Negotiate($S,$C,<~n3,nd>,nd),
+        Commit($C,$S,nr),
+        Origin(~ak),
+        Sd($S,<Sid,$Ver,data3>),
+        Send($S,<Sid,$Ver,data3>),
+        Trace($C,<Sid,$Ver,data3>),
+        Honest($S)
+      ]->
+      [Out(<$S,Sid,$Ver,data3>),ST_S_1($S,Sid,~n1,~ak,data1,~n3,data2,data3,$Ver)]
+
+rule C_2:
+      let 
+        nn = sdec(data3,kk)
+      in 
+      [In(<$S,~Sid,$Ver,data3>),ST_C_1($C,~Sid,~ltk,n1,~n2,kk,data2,$Ver)]
+      --[
+        //Eq(vp(nn,~n2),true),
+        VerifyS($C,$S,nn),
+        SessionKey($C,$S,kk),
+        Commit($C,$S,nn),
+        DosDefense($S,~Sid,<$Ver,data3>),
+        Trace($S,<~Sid,$Ver,data3>),
+        Honest($C)
+      ]->
+      []
+
+restriction Eq_check_succeed:
+ "
+    All x y #i. Eq(x,y) @ i ==> x = y
+ "
+
+lemma Dos_protection: 
+  "
+    All A c m #i. DosDefense(A,c,m) @i ==> 
+      (Ex #j. Send(A,m) @j & Honest(A) @j & j<i)
+  "
+  
+
+
+lemma Data_Verify:
+  "
+
+    All m1 m2 MK #i. 
+       VerifyS(m1,m2,MK) @i ==>
+       not (Ex #k. (K(m1)@k&K(MK)@k))
+       |
+       not (Ex #k. (K(m2)@k&K(MK)@k))
+  
+  "
+
+
+ 
+lemma MK_conf:
+  " 
+        All A B MK #j.
+          SessionKey(A,B,MK)@j ==> not (Ex #k. K(MK) @k)
+  "
+
+  
+lemma injective_agree:
+  "
+    All Role_A Role_B Key #i.
+      Commit(Role_A,Role_B,Key) @i 
+      ==>
+          Ex data #j. Negotiate(Role_B,Role_A,Key,data) @j & j < i
+  
+  "
+
+ lemma traceability:
+  "
+    All Role m  #i #j.
+      Trace(Role,m) @i & Sd(Role,m)@j & j<i
+      ==> Ex mk. Origin(mk)@j 
+  " 
+
+end

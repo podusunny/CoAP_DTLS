@@ -1,0 +1,205 @@
+theory SRTP_DY_Handshake
+begin
+/*
+A → B : A, Sid, Na, Ver
+B → A : B, Sid, Nb, Ver, {PK_A}k
+A → B : {Data}_k, HMAC(Data)_k
+B → A : {Data}_k, HMAC(Data)_k
+A → B : PRF(g^k * Pk_B, Na, Nb) 
+B → A : PRF(g^k * Pk_A, Na, Nb)
+*/
+builtins: hashing, symmetric-encryption, asymmetric-encryption, signing,diffie-hellman
+
+section{*SRTP SRTP_DY*}
+
+functions: PRF/1,HMAC/1,list/1 [private],renc/2,rdec/2,RPK/1,PK/1,SK/1,verifyr/3,verifyd/2,vp/2
+equations://
+  RPK(PK(x)) = x
+
+equations:
+  rdec(renc(<a,b>,SK(PK(y))),PK(y)) = a
+  ,
+  rdec(renc(<RPK(z),b>,SK(z)),z) = RPK(z)
+  ,
+  verifyr(renc(<a,b>,SK(PK(y))),a,PK(y)) = true
+  ,
+  verifyr(renc(<RPK(z),b>,SK(z)),RPK(z),z) = true
+  ,
+  verifyd(rdec(renc(<a,b>,SK(PK(y))),PK(y)),a) = true
+  ,
+  verifyd(rdec(renc(<RPK(z),b>,SK(z)),z),RPK(z)) = true
+equations: 
+  vp(a,PRF(x)) = true,
+  vp(a,PRF(<x.1,x.2,x.3>)) = true,
+  vp(PRF(<a,b>),PRF(<a,c>)) = true,
+  vp(HMAC(HMAC(a)),HMAC(a)) = true,
+  vp(PRF(HMAC(HMAC(a))),PRF(HMAC(a))) = true
+
+rule PK_register:
+    let 
+    pkX = pk(~ltkX)
+    in
+    [Fr(~ltkX)]
+    --[]->
+    [!Ltk($X,~ltkX),!Pk($X,pkX)]
+
+rule C_0:
+    let
+      C = 'A'
+      Ver = 'SRTP'
+    in
+    [Fr(~Sid),Fr(~Na),!Ltk($C,~ltkC),!Pk($C,pkC)]
+    --[
+    Send($C,<~Sid,~Na,pkC,$Ver>),
+    Honest($C)
+    ]->
+    [Out(<$C,~Sid,~Na,pkC,$Ver>),ST_C_0($C,~Sid,~Na,~ltkC,pkC,$Ver)]
+
+rule S_0:
+    let
+      S = 'B'
+      Ver = 'SRTP' 
+      label = sign(pkC,~ltkS)
+    in 
+    [In(<$C,Sid,Na,pkC,$Ver>),Fr(~Nb),!Ltk($S,~ltkS),!Pk($S,pkS)]
+    --[
+    //DosDefense($C,<Sid,Na,pkC,$Ver>),
+    Send($S,<Sid,~Nb,pkS,label,$Ver>),
+    Honest($S)
+    ]->
+    [Out(<$S,Sid,~Nb,pkS,label,$Ver>),ST_S_0($S,Sid,Na,~Nb,pkC,~ltkS,pkS,label,$Ver)]
+  
+rule C_1:
+      let 
+        dc1 = HMAC(<Sid,Na,Nb,$Ver>)
+        dc2 = aenc(<dc1>,pkC)
+        
+      in 
+      [In(<$S,Sid,Nb,pkS,label,$Ver>),ST_C_0($C,Sid,Na,ltkC,pkC,$Ver)]
+      --[
+      Eq(verify(label,pkC,pkS),true),
+      DosDefense($S,<Sid,Nb,pkS,label,$Ver>),
+      Send($C,<Sid,dc2>),
+      Honest($C)
+      ]->
+      [Out(<$C,Sid,dc2>),ST_C_1($C,Sid,Na,ltkC,pkC,pkS,dc1,dc2,$Ver)]
+
+rule S_1:
+      let 
+        rds = adec(dc2,pkC)
+        ds1 = HMAC(<rds>)
+        ds2 = aenc(ds1,pkS)
+      in 
+      [In(<$C,Sid,dc2>),ST_S_0($S,Sid,Nb,Na,pkC,ltkS,pkS,label,$Ver)]
+      --[
+      //DosDefense($C,<Sid,dc2>),
+      Send($S,<ds2>),
+      Honest($S)
+      ]->
+      [Out(<$S,Na,Nb,ds2>),ST_S_1($S,Sid,Nb,Na,pkC,ltkS,pkS,rds,ds1,ds2,label,$Ver)]
+
+rule C_2:
+      let 
+        MK = 'g'^ltkC^pkS
+        rdc = adec(ds2,pkS)
+        vdc = PRF(<MK,rdc>)
+      in 
+      [In(<$S,Na,Nb,ds2>),ST_C_1($C,Sid,Na,ltkC,pkC,pkS,dc1,dc2,$Ver)]
+      --[
+      Eq(vp(rdc,dc1),true),
+
+      //DosDefense($S,<ds2>),
+      //Commit($C,$S,MK),
+      Sd($C,<MK,rdc,vdc>),
+      Origin(MK),
+      Negotiate($S,$C,MK,vdc),
+      Send($C,<vdc>),
+      MasterKey($C,$S,MK),
+
+      Honest($C)
+      ]->
+      [Out(<$C,Na,Nb,vdc>),ST_C_2($C,Sid,Na,ltkC,pkC,pkS,dc1,dc2,MK,rdc,vdc,$Ver)]
+
+rule S_2:
+      let 
+        MK = 'g'^ltkS^pkC
+        vds = PRF(<MK,ds1>)
+      in 
+      [In(<$C,vdc>),ST_S_1($S,Sid,Nb,Na,pkC,ltkS,pkS,rds,ds1,ds2,label,$Ver)]
+      --[
+      Eq(vp(vdc,vds),true),
+      //DosDefense($C,<vdc>),
+      Commit($C,$S,MK),
+      Negotiate($C,$S,MK,vds),
+      VerifyS(vdc,vds,MK),
+      Send($S,<vds>),
+      MasterKey($S,$C,MK),
+      Sd($S,<MK,vds>),
+      Origin(MK),
+      Trace($S,<vds>),
+      Honest($S)
+      ]->
+      [Out(<$S,vds>),ST_S_2($S,Sid,Nb,Na,pkC,ltkS,pkS,rds,ds1,ds2,label,MK,vds,$Ver)]
+
+rule C_3:
+
+      [In(<$S,vds>),ST_C_2($C,Sid,Na,ltkC,pkC,pkS,dc1,dc2,MK,rdc,vdc,$Ver)]
+      --[
+      Eq(vp(vds,vdc),true),
+      VerifyS(vds,vdc,MK),
+      //DosDefense($S,<vds>),
+      SessionKey($S,$C,MK),
+      Trace($C,<vds>),
+      Honest($C)
+      ]->
+      [ST_C_3($C,Sid,Na,ltkC,pkC,pkS,dc1,dc2,MK,rdc,vdc,$Ver)]
+
+restriction Eq_check_succeed:
+ "
+    All x y #i. Eq(x,y) @ i ==> x = y
+ "
+
+lemma Dos_protection: 
+  "
+    All A B m #i. Honest(B)@i & DosDefense(A,m) @i ==> 
+      (Ex #j. Send(A,m) @j & Honest(A) @j & j<i)
+  "
+  
+
+
+lemma Data_Verify:
+  "
+
+    All m1 m2 MK #i. 
+       VerifyS(m1,m2,MK) @i ==>
+       not (Ex #k. (K(m1)@k&K(MK)@k))
+       |
+       not (Ex #k. (K(m2)@k&K(MK)@k))
+  "
+
+
+ 
+lemma MK_conf:
+  " 
+        All A B MK #j.
+          SessionKey(A,B,MK)@j ==> not (Ex #k. K(MK) @k)
+  "
+
+  
+lemma injective_agree:
+  "
+    All Role_A Role_B Key #i.
+      Commit(Role_A,Role_B,Key) @i 
+      ==>
+          Ex data #j. Negotiate(Role_B,Role_A,Key,data) @j & j < i
+  
+  "
+
+ lemma traceability:
+  "
+    All Role m  #i #j.
+      Trace(Role,m) @i & Sd(Role,m)@j & j<i
+      ==> Ex mk. Origin(mk)@j 
+  " 
+
+end

@@ -1,0 +1,159 @@
+theory CoAP_RPK_DY_Handshake
+begin
+
+builtins: hashing, symmetric-encryption, asymmetric-encryption, signing,diffie-hellman
+
+section{*CoAP CoAP_RPK_DY*}
+
+functions: PRF/1,HMAC/1,list/1 [private],renc/2,rdec/2,RPK/1,PK/1,SK/1,verifyr/3,verifyd/2,vp/2
+equations://
+  RPK(PK(x)) = x
+
+equations:
+  rdec(renc(<a,b>,SK(PK(y))),PK(y)) = a
+  ,
+  rdec(renc(<RPK(z),b>,SK(z)),z) = RPK(z)
+  ,
+  verifyr(renc(<a,b>,SK(PK(y))),a,PK(y)) = true
+  ,
+  verifyr(renc(<RPK(z),b>,SK(z)),RPK(z),z) = true
+  ,
+  verifyd(rdec(renc(<a,b>,SK(PK(y))),PK(y)),a) = true
+  ,
+  verifyd(rdec(renc(<RPK(z),b>,SK(z)),z),RPK(z)) = true
+equations: 
+  vp(a,PRF(x)) = true,
+  vp(a,PRF(<x.1,x.2,x.3>)) = true
+
+rule C_0:
+    let
+       C = 'Client'
+       Ver = 'CoAP'
+    in
+    [Fr(~Nc),Fr(~Sid),Fr(~CCT),Fr(~SCT)]
+    --[Honest(C)]->
+    [Out(<$C,Ver,~Nc,~Sid,~CCT,~SCT>),ST_C_0($C,Ver,~Nc,~Sid,~CCT,~SCT)]
+
+rule S_0:
+    let
+      S = 'Server'
+      RSPK = list(SCT)
+      SPK =  PK(RSPK)
+      SSK =  SK(SPK)  
+      Ssig = renc(<RSPK,~Ns>,SSK)
+    in
+    [In(<$C,Ver,Nc,Sid,CCT,SCT>),Fr(~Ns)]
+    --[Send($S,<CCT,Ssig,SPK>),
+       Honest($S)]->
+    [Out(<$S,Ver,Nc,~Ns,Sid,CCT,Ssig,SPK>),ST_S_0($S,Ver,Nc,~Ns,Sid,Ssig,RSPK,SPK,SSK)]
+
+rule C_1:
+    let 
+      RCPK = list(CCT)
+      CPK = PK(RCPK)
+      CSK = SK(CPK)
+      PMK = 'g'^CSK^SPK
+      MK = PRF(PMK,Nc,Ns)
+      Verify_Data_C = PRF(MK,h(Ver,Nc,Ns,Sid))
+      Csig = renc(<RCPK,Nc>,CSK)
+      EdcCsig = rdec(Ssig,SPK)
+    in
+    [In(<$S,Ver,Nc,Ns,Sid,CCT,Ssig,SPK>),ST_C_0($C,Ver,Nc,Sid,CCT,SCT)]
+    --[
+    Eq(verifyd(EdcCsig,RPK(SPK)),true),
+    DosDefense($S,<CCT,Ssig,SPK>),
+    MasterKey($S,$C,MK),
+    Negotiate($C,$S,<PMK,MK,Verify_Data_C>),
+    Send($C,<Csig,CPK,Verify_Data_C>),
+    Origin(MK),
+    Sd($C,<CPK,Verify_Data_C>),
+    Honest($C)
+    ]->
+    [Out(<$C,Csig,CPK,Verify_Data_C>),ST_C_1($C,Ver,Nc,Sid,Csig,Verify_Data_C,PMK,MK,SPK,RCPK,CPK,CSK)]
+
+rule S_1:
+  let 
+  PMK = 'g'^SSK^CPK
+  MK = PRF(PMK,Nc,Ns)
+  Verify_Data_S = PRF(MK,h(Ver,Nc,Ns,Sid))
+  EdcSsig = rdec(Csig,CPK)
+  in 
+  [In(<$C,Num,Csig,CPK,Verify_Data_C>),ST_S_0($S,Ver,Nc,Ns,Sid,Ssig,RSPK,SPK,SSK)]
+  --[
+       Eq(verifyd(EdcSsig,PRF(CPK)),true),
+       Eq(vp(Verify_Data_C,Verify_Data_S),true),
+       VerifyC(Verify_Data_C,Verify_Data_S),
+       DosDefense($C,<Csig,CPK,Verify_Data_C>),
+       MasterKey($S,$C,MK),
+       Negotiate($C,$S,<PMK,MK,Verify_Data_S>),
+       Commit($C,$S,MK,PMK),
+       Send($S,Verify_Data_S),
+       Origin(MK),
+       Sd($S,<Verify_Data_S>),
+       Trace($C,<CPK,Verify_Data_C>),
+       Honest($S)
+    ]->
+  [Out(<$S,Verify_Data_S>)]
+
+rule C_2:
+  [In(<$S,Verify_Data_S>),ST_C_1($C,Ver,Nc,Sid,Csig,Verify_Data_C,PMK,MK,SPK,RCPK,CPK,CSK)]
+  --[
+        Eq(vp(Verify_Data_S,Verify_Data_C),true),
+        SessionKey($S,$C,MK),
+        VerifyS(Verify_Data_S,Verify_Data_C),
+        DosDefense($S,Verify_Data_S),
+        Commit($C,$S,MK,PMK),
+        Trace($S,<Verify_Data_S>),
+        Honest($C)
+
+    ]->
+  []
+
+restriction Eq_check_succeed:
+ "
+    All x y #i. Eq(x,y) @ i ==> x = y
+ "
+ 
+lemma Dos_protection: 
+  "
+    All A m #i. DosDefense(A,m) @i ==> 
+      (Ex #j. Send(A,m) @j & Honest(A) @j & j<i)"
+ 
+
+lemma Data_Verify:
+  "
+    All m1 m2 a b #i #q. 
+       VerifyS(m1,m2) @i & Eq(a,b) @q ==>(a = b)
+       &
+       (Ex Data1 Data2 #j. VerifyC(Data1,Data2) @j & Data2 = m1 & j<i)
+       &
+       ((Ex A B MK. SessionKey(A,B,MK) @i )) //& k < i
+  "
+  
+lemma CoAP_MK_confi:
+  "
+    not (
+        Ex S C MK #i #j.
+          MasterKey(S,C,MK) @i & SessionKey(S,C,MK)@j
+          &
+          (Ex #k. K(MK) @k) 
+      ) 
+  "
+ 
+lemma CoAP_injective_agree:
+  "
+    All Role_A Role_B Key PSK #i.
+      Commit(Role_A,Role_B,Key,PSK) @i 
+      ==>
+          Ex #j. Negotiate(Role_A,Role_B,Key) @j & j < i
+          & not (Ex Role_A2 Role_B2 #k. 
+              Commit(Role_A2,Role_B2,Key,PSK) @k & not (#i = #k))
+  "
+ lemma CoAP_traceability:
+  "
+    All Role m  #i #j.
+      Trace(Role,m) @i & Sd(Role,m)@j & j<i
+      ==> Ex mk. Origin(mk)@j 
+  " 
+ 
+end
