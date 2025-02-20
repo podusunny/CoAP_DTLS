@@ -70,6 +70,8 @@ rule C_2:
        MasterKey($S,$C,MK),
        Negotiate($C,$S,<Label,PMK,MK,Verify_Data_C>),
        Send($S,<SigV,SigC,Verify_Data_C,pkC>),
+       Origin(MK),
+       Sd($C,<Num,Label,SigC,Verify_Data_C>),
        Honest($C)
        ]->
     [Out(<$C,Num,Label,SigV,SigC,Verify_Data_C,pkC>),ST_C_2($C,Ver,Nc,Ns,Sid,SigV,PMK,MK,Verify_Data_C)]
@@ -92,6 +94,9 @@ rule S_2:
        Negotiate($C,$S,<Label,PMK,MK,Verify_Data_S>),
        Commit($C,$S,MK,PMK),
        Send($S,Verify_Data_S),
+       Origin(MK),
+       Sd($S,<Num,Label,Verify_Data_S>),
+       Trace($C,<Num,Label,SigC,Verify_Data_C>),
        Honest($S)
        ]->
     [Out(<$S,Num,Label,Verify_Data_S>)]
@@ -103,6 +108,8 @@ rule C_3:
         SessionKey($S,$C,MK),
         DosDefense($S,Verify_Data_S),
         Commit($C,$S,MK,PMK),
+        
+        Trace($S,<Num,Label,Verify_Data_S>),
         Honest($C)
         ]->
      []
@@ -148,6 +155,11 @@ lemma DTLS_injective_agree:
           & not (Ex Role_A2 Role_B2 #k. 
               Commit(Role_A2,Role_B2,Key,PSK) @k & not (#i = #k))
   "
-  
- 
+
+ lemma DTLS_traceability:
+  "
+    All Role m  #i #j.
+      Trace(Role,m) @i & Sd(Role,m)@j & j<i
+      ==> Ex mk. Origin(mk)@j 
+  " 
 end
